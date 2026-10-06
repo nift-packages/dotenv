@@ -1,6 +1,10 @@
 /*
     Deterministic dotenv parsing with strict UTF-8 and no interpolation.
     Public API: the exported `dotenv` facade. All helpers are private.
+
+    The input bytes are converted once into a plain byte-integer array and the
+    parser reads elements inline (never through a per-byte helper call), which
+    keeps parsing effectively linear in the input size.
 */
 
 struct(dotenv) {
@@ -9,14 +13,15 @@ struct(dotenv) {
         return invalid_value.length()
     }
 
-    private fn(space(byte)) {
-        return byte == 32 || byte == 9
+    private fn(to_ints(bytes_value)) {
+        ints := []
+        i := 0
+        while(i < bytes_value.size()) { ints.push(bytes_value[i]); i += 1 }
+        return ints
     }
 
-    private fn(byte_at(source, index)) {
-        one := source.slice(index, index + 1)
-        value := one[0].to_int()
-        return value
+    private fn(space(byte)) {
+        return byte == 32 || byte == 9
     }
 
     private fn(key_start(byte)) {
@@ -39,27 +44,27 @@ struct(dotenv) {
         return {"entry":entry,"diagnostic":diagnostic}
     }
 
-    private fn(too_many_lines(source)) {
-        if(source.length() == 0) { return false }
+    private fn(too_many_lines(data)) {
+        if(data.size() == 0) { return false }
         lines := 1
         i := 0
-        while(i < source.length()) {
-            current := this.byte_at(source, i)
+        while(i < data.size()) {
+            current := data[i]
             if(current == 13) {
-                if(i + 1 < source.length() && this.byte_at(source, i + 1) == 10) { i += 1 }
-                if(i + 1 < source.length()) { lines += 1 }
+                if(i + 1 < data.size() && data[i + 1] == 10) { i += 1 }
+                if(i + 1 < data.size()) { lines += 1 }
             }
-            else if(current == 10 && i + 1 < source.length()) { lines += 1 }
+            else if(current == 10 && i + 1 < data.size()) { lines += 1 }
             if(lines > 1024) { return true }
             i += 1
         }
         return false
     }
 
-    private fn(utf8_error(source)) {
+    private fn(utf8_error(data)) {
         i := 0
-        while(i < source.length()) {
-            first := this.byte_at(source, i)
+        while(i < data.size()) {
+            first := data[i]
             if(first <= 127) { i += 1; continue }
 
             count := 0
@@ -75,12 +80,12 @@ struct(dotenv) {
             else if(first == 244) { count = 4; second_max = 143 }
             else { return i }
 
-            if(i + count > source.length()) { return i }
-            second := this.byte_at(source, i + 1)
+            if(i + count > data.size()) { return i }
+            second := data[i + 1]
             if(second < second_min || second > second_max) { return i + 1 }
             j := 2
             while(j < count) {
-                continuation := this.byte_at(source, i + j)
+                continuation := data[i + j]
                 if(continuation < 128 || continuation > 191) { return i + j }
                 j += 1
             }
@@ -89,14 +94,14 @@ struct(dotenv) {
         return -1
     }
 
-    private fn(location(source, offset)) {
+    private fn(location(data, offset)) {
         line := 1
         column := 1
         i := 0
         while(i < offset) {
-            current := this.byte_at(source, i)
+            current := data[i]
             if(current == 13) {
-                if(i + 1 < offset && this.byte_at(source, i + 1) == 10) { i += 1 }
+                if(i + 1 < offset && data[i + 1] == 10) { i += 1 }
                 line += 1
                 column = 1
             }
@@ -110,19 +115,19 @@ struct(dotenv) {
         return {"line":line,"column":column}
     }
 
-    private fn(text(source, begin, end)) {
-        return source.slice(begin, end).decode("utf-8")
+    private fn(text(data, begin, end)) {
+        return bytes(data.slice(begin, end)).decode("utf-8")
     }
 
-    private fn(export_prefix(source, cursor, end)) {
+    private fn(export_prefix(data, cursor, end)) {
         if(end - cursor < 7) { return false }
-        return this.byte_at(source, cursor) == 101 && this.byte_at(source, cursor + 1) == 120 && this.byte_at(source, cursor + 2) == 112 && this.byte_at(source, cursor + 3) == 111 && this.byte_at(source, cursor + 4) == 114 && this.byte_at(source, cursor + 5) == 116 && this.space(this.byte_at(source, cursor + 6))
+        return data[cursor] == 101 && data[cursor + 1] == 120 && data[cursor + 2] == 112 && data[cursor + 3] == 111 && data[cursor + 4] == 114 && data[cursor + 5] == 116 && this.space(data[cursor + 6])
     }
 
-    private fn(parse_line(source, begin, end, line)) {
+    private fn(parse_line(data, begin, end, line)) {
         scan := begin
         while(scan < end) {
-            if(this.byte_at(source, scan) == 0) {
+            if(data[scan] == 0) {
                 diagnostic := this.diagnostic("nul_byte", "NUL byte is not allowed", line, scan - begin + 1, "error")
                 return this.line_result(null, diagnostic)
             }
@@ -130,58 +135,58 @@ struct(dotenv) {
         }
 
         cursor := begin
-        while(cursor < end && this.space(this.byte_at(source, cursor))) { cursor += 1 }
-        if(cursor == end || this.byte_at(source, cursor) == 35) { return this.line_result(null, null) }
+        while(cursor < end && this.space(data[cursor])) { cursor += 1 }
+        if(cursor == end || data[cursor] == 35) { return this.line_result(null, null) }
 
-        if(this.export_prefix(source, cursor, end)) {
+        if(this.export_prefix(data, cursor, end)) {
             cursor += 6
-            while(cursor < end && this.space(this.byte_at(source, cursor))) { cursor += 1 }
+            while(cursor < end && this.space(data[cursor])) { cursor += 1 }
         }
 
-        if(cursor == end || !this.key_start(this.byte_at(source, cursor))) {
+        if(cursor == end || !this.key_start(data[cursor])) {
             diagnostic := this.diagnostic("invalid_key_start", "variable name must start with an ASCII letter or underscore", line, cursor - begin + 1, "error")
             return this.line_result(null, diagnostic)
         }
         key_begin := cursor
-        while(cursor < end && this.key_byte(this.byte_at(source, cursor))) { cursor += 1 }
+        while(cursor < end && this.key_byte(data[cursor])) { cursor += 1 }
         key_end := cursor
-        if(cursor < end && !this.space(this.byte_at(source, cursor)) && this.byte_at(source, cursor) != 61) {
+        if(cursor < end && !this.space(data[cursor]) && data[cursor] != 61) {
             diagnostic := this.diagnostic("invalid_key_character", "variable name contains an invalid character", line, cursor - begin + 1, "error")
             return this.line_result(null, diagnostic)
         }
-        while(cursor < end && this.space(this.byte_at(source, cursor))) { cursor += 1 }
-        if(cursor == end || this.byte_at(source, cursor) != 61) {
+        while(cursor < end && this.space(data[cursor])) { cursor += 1 }
+        if(cursor == end || data[cursor] != 61) {
             diagnostic := this.diagnostic("missing_equals", "expected '=' after variable name", line, cursor - begin + 1, "error")
             return this.line_result(null, diagnostic)
         }
         cursor += 1
-        while(cursor < end && this.space(this.byte_at(source, cursor))) { cursor += 1 }
+        while(cursor < end && this.space(data[cursor])) { cursor += 1 }
 
         value := ""
         quoted := false
-        if(cursor < end && this.byte_at(source, cursor) == 39) {
+        if(cursor < end && data[cursor] == 39) {
             quoted = true
             quote_column := cursor - begin + 1
             cursor += 1
             value_begin := cursor
-            while(cursor < end && this.byte_at(source, cursor) != 39) { cursor += 1 }
+            while(cursor < end && data[cursor] != 39) { cursor += 1 }
             if(cursor == end) {
                 diagnostic := this.diagnostic("unterminated_single_quote", "unterminated single-quoted value", line, quote_column, "error")
                 return this.line_result(null, diagnostic)
             }
             else {
-                value = this.text(source, value_begin, cursor)
+                value = this.text(data, value_begin, cursor)
                 cursor += 1
             }
         }
-        else if(cursor < end && this.byte_at(source, cursor) == 34) {
+        else if(cursor < end && data[cursor] == 34) {
             quoted = true
             quote_column := cursor - begin + 1
             cursor += 1
             decoded := []
             closed := false
             while(cursor < end) {
-                current := this.byte_at(source, cursor)
+                current := data[cursor]
                 if(current == 34) {
                     closed = true
                     cursor += 1
@@ -194,7 +199,7 @@ struct(dotenv) {
                         diagnostic := this.diagnostic("invalid_escape", "incomplete escape in double-quoted value", line, escape_column, "error")
                         return this.line_result(null, diagnostic)
                     }
-                    escaped := this.byte_at(source, cursor)
+                    escaped := data[cursor]
                     if(escaped == 110) { decoded.push(10) }
                     else if(escaped == 114) { decoded.push(13) }
                     else if(escaped == 116) { decoded.push(9) }
@@ -220,26 +225,26 @@ struct(dotenv) {
             value_begin := cursor
             value_end := end
             while(cursor < end) {
-                if(this.byte_at(source, cursor) == 35 && (cursor == value_begin || this.space(this.byte_at(source, cursor - 1)))) {
+                if(data[cursor] == 35 && (cursor == value_begin || data[cursor - 1] == 32 || data[cursor - 1] == 9)) {
                     value_end = cursor
                     break
                 }
                 cursor += 1
             }
-            while(value_end > value_begin && this.space(this.byte_at(source, value_end - 1))) { value_end -= 1 }
-            value = this.text(source, value_begin, value_end)
+            while(value_end > value_begin && this.space(data[value_end - 1])) { value_end -= 1 }
+            value = this.text(data, value_begin, value_end)
         }
 
         if(quoted && cursor < end) {
             had_space := false
-            while(cursor < end && this.space(this.byte_at(source, cursor))) { had_space = true; cursor += 1 }
-            if(cursor < end && (this.byte_at(source, cursor) != 35 || !had_space)) {
+            while(cursor < end && this.space(data[cursor])) { had_space = true; cursor += 1 }
+            if(cursor < end && (data[cursor] != 35 || !had_space)) {
                 diagnostic := this.diagnostic("trailing_content", "unexpected content after quoted value", line, cursor - begin + 1, "error")
                 return this.line_result(null, diagnostic)
             }
         }
 
-        key := this.text(source, key_begin, key_end)
+        key := this.text(data, key_begin, key_end)
         entry := {"key":key,"value":value,"line":line,"column":key_begin - begin + 1}
         return this.line_result(entry, null)
     }
@@ -250,13 +255,14 @@ struct(dotenv) {
             diagnostic := this.diagnostic("input_too_large", "input exceeds 24576-byte limit", 1, 1, "error")
             return this.result(false, {}, [], [diagnostic])
         }
-        if(this.too_many_lines(source)) {
+        data := this.to_ints(source)
+        if(this.too_many_lines(data)) {
             diagnostic := this.diagnostic("input_too_large", "input exceeds 1024-logical-line limit", 1, 1, "error")
             return this.result(false, {}, [], [diagnostic])
         }
-        invalid := this.utf8_error(source)
+        invalid := this.utf8_error(data)
         if(invalid >= 0) {
-            where := this.location(source, invalid)
+            where := this.location(data, invalid)
             diagnostic := this.diagnostic("invalid_utf8", "input is not valid UTF-8", where.line, where.column, "error")
             return {"ok":false,"values":{},"entries":[],"diagnostics":[diagnostic]}
         }
@@ -267,10 +273,10 @@ struct(dotenv) {
         diagnostics := []
         offset := 0
         line := 1
-        while(offset < source.length()) {
+        while(offset < data.size()) {
             line_end := offset
-            while(line_end < source.length() && this.byte_at(source, line_end) != 10 && this.byte_at(source, line_end) != 13) { line_end += 1 }
-            parsed := this.parse_line(source, offset, line_end, line)
+            while(line_end < data.size() && data[line_end] != 10 && data[line_end] != 13) { line_end += 1 }
+            parsed := this.parse_line(data, offset, line_end, line)
             if(parsed.diagnostic != null) {
                 ok = false
                 diagnostics.push(parsed.diagnostic)
@@ -287,11 +293,11 @@ struct(dotenv) {
                 values[key] = value
                 entries.push(entry)
             }
-            if(line_end < source.length() && this.byte_at(source, line_end) == 13 && line_end + 1 < source.length() && this.byte_at(source, line_end + 1) == 10) {
+            if(line_end < data.size() && data[line_end] == 13 && line_end + 1 < data.size() && data[line_end + 1] == 10) {
                 offset = line_end + 2
             }
-            else if(line_end < source.length()) { offset = line_end + 1 }
-            else { offset = source.length() }
+            else if(line_end < data.size()) { offset = line_end + 1 }
+            else { offset = data.size() }
             line += 1
         }
         return this.result(ok, values, entries, diagnostics)

@@ -56,12 +56,16 @@ string with more than 24,576 characters before encoding it; such a string
 necessarily exceeds the UTF-8 byte limit. Shorter Unicode strings are encoded
 and checked by their actual byte length.
 
-The 24 KiB ceiling is based on end-to-end measurements with the pinned Nift
-v4.6 baseline. A valid 24,576-byte single-line assignment completed in about
-13.95 seconds, compared with about 15.81 seconds at 32 KiB; 64 KiB exceeded the
-25-second test timeout. Nift v4.6 does not support dynamic direct indexing of a
-bytes function argument, so the parser must use one-byte slices. The selected
-limit leaves runtime margin while retaining the established 1,000-line corpus.
+The 24 KiB ceiling is retained as a defensive work bound. The current parser
+converts the admitted input bytes into a byte-integer array once and reads
+elements inline (it no longer uses per-byte slices), so parsing is linear in the
+input. On the current Nift build a valid 24,576-byte single-line assignment
+parses in about 2 seconds including interpreter startup, compared with roughly
+14 seconds on the original slice-based parser. Residual cost is per-line Nift
+interpreter work (object/result construction), which is why the limit stays
+rather than being raised: it keeps worst-case parse time comfortably bounded for
+a defensive constant. 32 KiB and larger inputs are rejected immediately by the
+byte-length check.
 
 ## Grammar
 
